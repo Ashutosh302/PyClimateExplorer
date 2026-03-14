@@ -9,11 +9,11 @@ import time
 st.set_page_config(layout="wide", page_title="Climate Explorer Pro")
 
 # --- 1. OPTIMIZED CACHING FUNCTIONS ---
-@st.cache_data
-def load_full_variable(file_path, var_name):
-    """Loads the specific variable into RAM for instant slider response."""
-    with xr.open_dataset(file_path) as ds:
-        return ds[var_name].load()
+# --- 1. OPTIMIZED CACHING FUNCTIONS ---
+@st.cache_resource
+def get_dataset(file_path):
+    """Caches the file connection without overloading RAM."""
+    return xr.open_dataset(file_path)
 
 @st.cache_data
 def get_sphere_coords(lons, lats):
@@ -40,7 +40,9 @@ if nc_files:
     variable = st.selectbox("Select Climate Variable", list(ds_meta.data_vars))
 
     # Load 300MB variable into RAM
-    data = load_full_variable(file_path, variable)
+    # Access the variable directly without forcing it into RAM
+    ds = get_dataset(file_path)
+    data = ds[variable]
 
     friendly_names = {
         't2m': 'Surface Temperature (K)',
@@ -135,7 +137,7 @@ if nc_files:
                 col_graph, col_stats = st.columns([3, 1])
                 
                 with col_graph:
-                    st.line_chart(ts.to_dataframe()[variable], use_container_width=True)
+                   st.line_chart(ts.to_dataframe()[variable], width='stretch')
                 
                 with col_stats:
                     st.write("**Quick Stats**")
@@ -154,7 +156,7 @@ if nc_files:
             ax.coastlines()
             mesh = ax.pcolormesh(data[lon_name].values, data[lat_name].values, step_data.values,
                                  transform=ccrs.PlateCarree(), cmap=cmap, rasterized=True)
-            plt.colorbar(mesh, ax=ax, label=clean_name)
+            fig.colorbar(mesh, ax=ax, label=clean_name)
             st.pyplot(fig)
 
         with col_globe:
