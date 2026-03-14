@@ -36,7 +36,7 @@ if nc_files:
     file_path = os.path.join(current_folder, selected_filename)
 
     # Initial metadata check
-    ds_meta = xr.open_dataset(file_path, chunks={})
+    ds_meta = xr.open_dataset(file_path)
     variable = st.selectbox("Select Climate Variable", list(ds_meta.data_vars))
 
     # Load 300MB variable into RAM
@@ -161,7 +161,16 @@ if nc_files:
             st.subheader("3D Earth")
             X, Y, Z = get_sphere_coords(data[lon_name].values, data[lat_name].values)
             z_vals = step_data.values
-            norm_data = (z_vals - np.nanmin(z_vals)) / (np.nanmax(z_vals) - np.nanmin(z_vals))
+            
+            # 1. Protect against empty slices and division by zero
+            z_min, z_max = np.nanmin(z_vals), np.nanmax(z_vals)
+            if z_max > z_min:
+                norm_data = (z_vals - z_min) / (z_max - z_min)
+            else:
+                norm_data = np.zeros_like(z_vals)
+            
+            # 2. FIX: Convert NaNs to 0 so the colormap doesn't break
+            norm_data = np.nan_to_num(norm_data, nan=0.0)
             
             fig3 = plt.figure()
             ax3 = fig3.add_subplot(111, projection='3d')
