@@ -4,26 +4,14 @@ import xarray as xr
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs 
 import numpy as np
-import time
 
 st.set_page_config(layout="wide", page_title="Climate Explorer Pro")
 
-# --- 1. OPTIMIZED CACHING FUNCTIONS ---
 # --- 1. OPTIMIZED CACHING FUNCTIONS ---
 @st.cache_resource
 def get_dataset(file_path):
     """Caches the file connection without overloading RAM."""
     return xr.open_dataset(file_path)
-
-@st.cache_data
-def get_sphere_coords(lons, lats):
-    """Caches the spherical math so it only runs once per dataset."""
-    lon_rad, lat_rad = np.deg2rad(lons), np.deg2rad(lats)
-    lon_grid, lat_grid = np.meshgrid(lon_rad, lat_rad)
-    X = np.cos(lat_grid) * np.cos(lon_grid)
-    Y = np.cos(lat_grid) * np.sin(lon_grid)
-    Z = np.sin(lat_grid)
-    return X, Y, Z
 
 # --- 2. FILE SCANNING & LOADING ---
 st.title("🌍 PyClimaExplorer Dashboard")
@@ -39,15 +27,14 @@ if nc_files:
     ds_meta = xr.open_dataset(file_path)
     variable = st.selectbox("Select Climate Variable", list(ds_meta.data_vars))
 
-    # Load 300MB variable into RAM
     # Access the variable directly without forcing it into RAM
     ds = get_dataset(file_path)
     data = ds[variable]
 
     friendly_names = {
-        't2m': 'Surface Temperature (K)',
-        'sd': 'Global Snow Depth (m)',
-        'swvl1': 'Topsoil Moisture (m³/m³)',
+        't2m': '2 Metre Temperature (K)',
+        'sd': 'Snow Depth (m)',
+        'swvl1': 'Volumetric Soil Water Layer 1 (m³/m³)',
         'tp': 'Total Precipitation (m)'
     }
     clean_name = friendly_names.get(variable, variable)
@@ -70,24 +57,13 @@ if nc_files:
     time_coords = [c for c in data.coords if 'time' in c.lower() or c.lower() == 't']
     time_name = time_coords[0] if time_coords else None
 
-    # --- 4. TIME & ANIMATION LOGIC ---
+    # --- 4. TIME LOGIC (MANUAL SLIDER) ---
     if time_name:
         num_steps = len(data[time_name])
         st.write("---")
         
-        # Sidebar Animation Toggle
-        animate = st.sidebar.checkbox("▶️ Animate Timeline")
-        
-        if animate:
-            # Auto-increment the slider index
-            if "time_idx" not in st.session_state:
-                st.session_state.time_idx = 0
-            st.session_state.time_idx = (st.session_state.time_idx + 1) % num_steps
-            time_index = st.slider("Timeline Step", 0, num_steps - 1, st.session_state.time_idx)
-            time.sleep(0.05) # Control animation speed
-            st.rerun()
-        else:
-            time_index = st.slider("Timeline Step", 0, num_steps - 1, 0)
+        # Simple manual slider, no animation loop needed
+        time_index = st.slider("Timeline Step", 0, num_steps - 1, 0)
             
         time_label = str(data[time_name].values[time_index])[:10]
         step_data = data.isel({time_name: time_index})
@@ -146,36 +122,13 @@ if nc_files:
                     st.metric("Avg", f"{ts.mean().values:.2f}")
 
     # --- 6. GLOBAL VISUALIZATION SECTION ---
-    # We move the Maps and 3D Globe below the tabs so you can still see the big picture
-    with st.expander("🌍 Show Global Maps & 3D Globe", expanded=False):
-        col_map, col_globe = st.columns(2)
+    with st.expander("🌍 Show Global Map", expanded=False):
+        st.subheader(f"2D Map - {time_label}")
         
-        with col_map:
-            st.subheader(f"2D Map - {time_label}")
-            fig, ax = plt.subplots(subplot_kw={'projection': ccrs.PlateCarree()})
-            ax.coastlines()
-            mesh = ax.pcolormesh(data[lon_name].values, data[lat_name].values, step_data.values,
-                                 transform=ccrs.PlateCarree(), cmap=cmap, rasterized=True)
-            fig.colorbar(mesh, ax=ax, label=clean_name)
-            st.pyplot(fig)
-
-        with col_globe:
-            st.subheader("3D Earth")
-            X, Y, Z = get_sphere_coords(data[lon_name].values, data[lat_name].values)
-            z_vals = step_data.values
-            
-            # 1. Protect against empty slices and division by zero
-            z_min, z_max = np.nanmin(z_vals), np.nanmax(z_vals)
-            if z_max > z_min:
-                norm_data = (z_vals - z_min) / (z_max - z_min)
-            else:
-                norm_data = np.zeros_like(z_vals)
-            
-            # 2. FIX: Convert NaNs to 0 so the colormap doesn't break
-            norm_data = np.nan_to_num(norm_data, nan=0.0)
-            
-            fig3 = plt.figure()
-            ax3 = fig3.add_subplot(111, projection='3d')
-            ax3.plot_surface(X, Y, Z, facecolors=cmap(norm_data), rstride=5, cstride=5)
-            ax3.set_axis_off()
-            st.pyplot(fig3)
+        # Draw the 2D map directly
+        fig, ax = plt.subplots(figsize=(10, 5), subplot_kw={'projection': ccrs.PlateCarree()})
+        ax.coastlines()
+        mesh = ax.pcolormesh(data[lon_name].values, data[lat_name].values, step_data.values,
+                             transform=ccrs.PlateCarree(), cmap=cmap, rasterized=True)
+        fig.colorbar(mesh, ax=ax, label=clean_name)
+        st.pyplot(fig)
