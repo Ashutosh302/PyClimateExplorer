@@ -1,0 +1,170 @@
+import os
+import streamlit as st
+import xarray as xr
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs 
+import numpy as np
+import time
+
+st.set_page_config(layout="wide", page_title="Climate Explorer Pro")
+
+# --- 1. OPTIMIZED CACHING FUNCTIONS ---
+@st.cache_data
+def load_full_variable(file_path, var_name):
+    """Loads the specific variable into RAM for instant slider response."""
+    with xr.open_dataset(file_path) as ds:
+        return ds[var_name].load()
+
+@st.cache_data
+def get_sphere_coords(lons, lats):
+    """Caches the spherical math so it only runs once per dataset."""
+    lon_rad, lat_rad = np.deg2rad(lons), np.deg2rad(lats)
+    lon_grid, lat_grid = np.meshgrid(lon_rad, lat_rad)
+    X = np.cos(lat_grid) * np.cos(lon_grid)
+    Y = np.cos(lat_grid) * np.sin(lon_grid)
+    Z = np.sin(lat_grid)
+    return X, Y, Z
+
+# --- 2. FILE SCANNING & LOADING ---
+st.title("🌍 PyClimaExplorer Dashboard")
+
+current_folder = os.getcwd()
+nc_files = [f for f in os.listdir(current_folder) if f.endswith('.nc')]
+
+if nc_files:
+    selected_filename = st.selectbox("Select a dataset:", nc_files)
+    file_path = os.path.join(current_folder, selected_filename)
+
+    # Initial metadata check
+    ds_meta = xr.open_dataset(file_path, chunks={})
+    variable = st.selectbox("Select Climate Variable", list(ds_meta.data_vars))
+
+    # Load 300MB variable into RAM
+    data = load_full_variable(file_path, variable)
+
+    friendly_names = {
+        't2m': 'Surface Temperature (K)',
+        'sd': 'Global Snow Depth (m)',
+        'swvl1': 'Topsoil Moisture (m³/m³)',
+        'tp': 'Total Precipitation (m)'
+    }
+    clean_name = friendly_names.get(variable, variable)
+    
+    # Navigation Sidebar
+    locations = {
+        "Manual Selection": None,
+        "Amazon Rainforest": {"lat": -3.4, "lon": -60.0},
+        "Sahara Desert": {"lat": 23.4, "lon": 25.0},
+        "Himalayas": {"lat": 28.0, "lon": 86.0},
+        "Arctic Circle": {"lat": 66.5, "lon": 0.0}
+    }
+    st.sidebar.header("Navigation")
+    selected_loc = st.sidebar.selectbox("Jump to Location Preset:", list(locations.keys()))
+    st.sidebar.metric(label="Active Parameter", value=clean_name)
+
+    # --- 3. COORDINATE DETECTION ---
+    lon_name = [c for c in data.coords if 'lon' in c.lower()][0]
+    lat_name = [c for c in data.coords if 'lat' in c.lower()][0]
+    time_coords = [c for c in data.coords if 'time' in c.lower() or c.lower() == 't']
+    time_name = time_coords[0] if time_coords else None
+
+    # --- 4. TIME & ANIMATION LOGIC ---
+    if time_name:
+        num_steps = len(data[time_name])
+        st.write("---")
+        
+        # Sidebar Animation Toggle
+        animate = st.sidebar.checkbox("▶️ Animate Timeline")
+        
+        if animate:
+            # Auto-increment the slider index
+            if "time_idx" not in st.session_state:
+                st.session_state.time_idx = 0
+            st.session_state.time_idx = (st.session_state.time_idx + 1) % num_steps
+            time_index = st.slider("Timeline Step", 0, num_steps - 1, st.session_state.time_idx)
+            time.sleep(0.05) # Control animation speed
+            st.rerun()
+        else:
+            time_index = st.slider("Timeline Step", 0, num_steps - 1, 0)
+            
+        time_label = str(data[time_name].values[time_index])[:10]
+        step_data = data.isel({time_name: time_index})
+    else:
+        time_index = 0
+        time_label = "Static"
+        step_data = data
+
+    # Colormap Logic
+    if variable == 'sd': cmap = plt.cm.Blues
+    elif variable == 'swvl1': cmap = plt.cm.BrBG
+    else: cmap = plt.cm.coolwarm
+
+    # --- 5. DYNAMIC LOCATION TABS ---
+    st.write("### 📍 Location-Specific Analysis")
+    
+    # We create a tab for every location in your dictionary
+    tab_list = list(locations.keys())
+    location_tabs = st.tabs(tab_list)
+
+    lat_vals, lon_vals = data[lat_name].values, data[lon_name].values
+
+    for i, tab in enumerate(location_tabs):
+        with tab:
+            loc_name = tab_list[i]
+            
+            if loc_name == "Manual Selection":
+                st.info("Use the sliders below to explore any coordinate on Earth.")
+                c1, c2 = st.columns(2)
+                l_idx = c1.slider("Latitude", 0, len(lat_vals)-1, len(lat_vals)//2, key="man_lat")
+                o_idx = c2.slider("Longitude", 0, len(lon_vals)-1, len(lon_vals)//2, key="man_lon")
+            else:
+                # Automatically find the index for the preset location
+                target_lat = locations[loc_name]["lat"]
+                target_lon = locations[loc_name]["lon"]
+                l_idx = int(np.abs(lat_vals - target_lat).argmin())
+                o_idx = int(np.abs(lon_vals - target_lon).argmin())
+                st.success(f"Viewing Preset: {loc_name} ({lat_vals[l_idx]:.2f}°, {lon_vals[o_idx]:.2f}°)")
+
+            # Fetch the data for this specific tab's location
+            ts = data.isel({lat_name: l_idx, lon_name: o_idx}).load()
+
+            if ts.isnull().all():
+                st.warning("⚠️ No data at this coordinate (Ocean).")
+            else:
+                # Layout for this location's data
+                col_graph, col_stats = st.columns([3, 1])
+                
+                with col_graph:
+                    st.line_chart(ts.to_dataframe()[variable], use_container_width=True)
+                
+                with col_stats:
+                    st.write("**Quick Stats**")
+                    st.metric("Max", f"{ts.max().values:.2f}")
+                    st.metric("Min", f"{ts.min().values:.2f}")
+                    st.metric("Avg", f"{ts.mean().values:.2f}")
+
+    # --- 6. GLOBAL VISUALIZATION SECTION ---
+    # We move the Maps and 3D Globe below the tabs so you can still see the big picture
+    with st.expander("🌍 Show Global Maps & 3D Globe", expanded=False):
+        col_map, col_globe = st.columns(2)
+        
+        with col_map:
+            st.subheader(f"2D Map - {time_label}")
+            fig, ax = plt.subplots(subplot_kw={'projection': ccrs.PlateCarree()})
+            ax.coastlines()
+            mesh = ax.pcolormesh(data[lon_name].values, data[lat_name].values, step_data.values,
+                                 transform=ccrs.PlateCarree(), cmap=cmap, rasterized=True)
+            plt.colorbar(mesh, ax=ax, label=clean_name)
+            st.pyplot(fig)
+
+        with col_globe:
+            st.subheader("3D Earth")
+            X, Y, Z = get_sphere_coords(data[lon_name].values, data[lat_name].values)
+            z_vals = step_data.values
+            norm_data = (z_vals - np.nanmin(z_vals)) / (np.nanmax(z_vals) - np.nanmin(z_vals))
+            
+            fig3 = plt.figure()
+            ax3 = fig3.add_subplot(111, projection='3d')
+            ax3.plot_surface(X, Y, Z, facecolors=cmap(norm_data), rstride=5, cstride=5)
+            ax3.set_axis_off()
+            st.pyplot(fig3)
